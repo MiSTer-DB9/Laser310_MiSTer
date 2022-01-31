@@ -179,7 +179,7 @@ localparam CONF_STR = {
         "O5,Turbo,Off,On;",
         "O6,Dos Rom,Off,On;",
         "O7,SHRG,Off,On;",
-        "O8,64x32 Video,Off,On;",
+     //   "O8,64x32 Video,Off,On;",
 
 		"-;",
 		"OUV,UserIO Joystick,Off,DB9MD,DB15 ;",
@@ -302,6 +302,7 @@ LASER310_TOP LASER310_TOP(
         .CLK50MHZ(clk_50),
         .CLK25MHZ(clk_25),
         .CLK10MHZ(clk_10),
+		  .CLK42MHZ(clk_42),
         .RESET(~reset),
         .VGA_RED(r),
         .VGA_GREEN(g),
@@ -310,6 +311,7 @@ LASER310_TOP LASER310_TOP(
         .VGA_VS(vs),
         .h_blank(hblank),
         .v_blank(vblank),
+		  .ce_pix(ce_pix),
         .AUD_ADCDAT(audio),
 //      .VIDEO_MODE(1'b0),
         .audio_s(audiomix),
@@ -345,9 +347,9 @@ LASER310_TOP LASER310_TOP(
 
 wire clk_vid;
 //assign CE_PIXEL = clk_vid;
-assign CLK_VIDEO = clk_50;
+assign CLK_VIDEO = clk_42;
 
-
+wire ce_pix;
 ///////////////////////////////////////////////////
 //wire clk_sys, clk_ram, clk_ram2, clk_pixel, locked;
 //
@@ -360,8 +362,8 @@ video_mixer #(.LINE_LENGTH(800),.GAMMA(1)) video_mixer
 (
         .*,
 
-        .clk_vid(clk_25),
-        .ce_pix(1),
+        .clk_vid(clk_42),
+        .ce_pix(ce_pix),
         .ce_pix_out(CE_PIXEL),
 
         .scanlines(0),
@@ -404,7 +406,7 @@ assign AUDIO_L={audiomix,8'b0000000};
 assign AUDIO_R=AUDIO_L;
 
 
-wire clk_50, clk_25, clk_10, clk_6p25;
+wire clk_50, clk_25, clk_10, clk_6p25, clk_42;
 wire pll_locked;
 
 
@@ -418,7 +420,8 @@ pll pll
    .outclk_0 (clk_50),         // 50 MHz
    .outclk_1 (clk_25),         // 25 MHz
    .outclk_2 (clk_10),         // 10 MHz
-   .outclk_3 (clk_6p25)         // 6.25 MHz
+   .outclk_3 (clk_6p25),       // 6.25 MHz
+   .outclk_4 (clk_42)          // 6.25 MHz
    );
 
   
