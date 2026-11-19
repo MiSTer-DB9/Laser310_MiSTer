@@ -7,6 +7,10 @@
 
 module emu
 (
+	// [MiSTer-DB9 BEGIN] - DB9/SNAC8 support: inline emu port list (rejecting
+	// `include "sys/emu_ports.vh"` to widen USER_IN/USER_OUT to 8 bits and add
+	// USER_OSD / USER_PP). Bulk port list mirrors sys/emu_ports.vh verbatim;
+	// only the User-port section below carries DB9 changes.
 	//Master input clock
 	input         CLK_50M,
 
@@ -15,7 +19,7 @@ module emu
 	input         RESET,
 
 	//Must be passed to hps_io module
-	inout  [48:0] HPS_BUS,
+	inout  [45:0] HPS_BUS,
 
 	//Base video clock. Usually equals to CLK_SYS.
 	output        CLK_VIDEO,
@@ -46,7 +50,13 @@ module emu
 	output        HDMI_BLACKOUT,
 	output        HDMI_BOB_DEINT,
 
-`ifdef MISTER_FB
+	input   [5:0] LFB_FMT,
+	input  [31:0] LFB_BASE,
+	input  [11:0] LFB_WIDTH,
+	input  [11:0] LFB_HEIGHT,
+	input  [13:0] LFB_STRIDE,
+
+	`ifdef MISTER_FB
 	// Use framebuffer in DDRAM
 	// FB_FORMAT:
 	//    [2:0] : 011=8bpp(palette) 100=16bpp 101=24bpp 110=32bpp
@@ -64,7 +74,7 @@ module emu
 	input         FB_LL,
 	output        FB_FORCE_BLANK,
 
-`ifdef MISTER_FB_PALETTE
+	`ifdef MISTER_FB_PALETTE
 	// Palette control for 8bit modes.
 	// Ignored for other video modes.
 	output        FB_PAL_CLK,
@@ -72,8 +82,8 @@ module emu
 	output [23:0] FB_PAL_DOUT,
 	input  [23:0] FB_PAL_DIN,
 	output        FB_PAL_WR,
-`endif
-`endif
+	`endif
+	`endif
 
 	output        LED_USER,  // 1 - ON, 0 - OFF.
 
@@ -130,7 +140,7 @@ module emu
 	output        SDRAM_nRAS,
 	output        SDRAM_nWE,
 
-`ifdef MISTER_DUAL_SDRAM
+	`ifdef MISTER_DUAL_SDRAM
 	//Secondary SDRAM
 	//Set all output SDRAM_* signals to Z ASAP if SDRAM2_EN is 0
 	input         SDRAM2_EN,
@@ -142,7 +152,7 @@ module emu
 	output        SDRAM2_nCAS,
 	output        SDRAM2_nRAS,
 	output        SDRAM2_nWE,
-`endif
+	`endif
 
 	input         UART_CTS,
 	output        UART_RTS,
@@ -156,14 +166,13 @@ module emu
 	// 1 - D-/TX
 	// 2..6 - USR2..USR6
 	// Set USER_OUT to 1 to read from USER_IN.
-	output	USER_OSD,
-	// [MiSTer-DB9 BEGIN] - DB9/SNAC8 support: per-pin push-pull mask
-	output	[7:0] USER_PP,
-	// [MiSTer-DB9 END]
-	input	[7:0] USER_IN,
-	output	[7:0] USER_OUT,
+	output        USER_OSD,
+	output  [7:0] USER_PP,
+	input   [7:0] USER_IN,
+	output  [7:0] USER_OUT,
 
 	input         OSD_STATUS
+	// [MiSTer-DB9 END]
 );
 
 
@@ -173,6 +182,7 @@ assign USER_PP = USER_PP_DRIVE;
 //`define SOUND_DBG
 assign VGA_SCALER = 0;
 assign VGA_F1 = 0;
+assign VGA_DISABLE = 0;
 
 assign HDMI_FREEZE = 0;
 assign HDMI_BLACKOUT = 0;
@@ -267,10 +277,9 @@ assign SDRAM_DQ = 'Z;
 
 assign BUTTONS = 0;
 
-assign AUDIO_S = 0;
+assign AUDIO_S = 1;
 assign AUDIO_MIX = 0;
 
-assign LED_DISK  = LED;						/* later add disk motor on/off */
 assign LED_POWER = 0;
 assign LED_USER  = LED2/*ioctl_download*/;
 
@@ -279,41 +288,81 @@ wire [2:0] sl = scale ? scale - 1'd1 : 3'd0;
 assign VGA_SL = sl[1:0];
 
 wire [1:0] ar = status[9:8];
-
-assign VIDEO_ARX = (!ar) ? 12'd4 : (ar - 1'd1);
-assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
+// VIDEO_ARX/ARY come from video_freak (below the video_mixer).
 
 `include "build_id.v"
+// OSD layout: ~/dev2/osd-standard.md (top page = media, then the pages
+// P1 Machine, P2 Video, P3 Input, P4 Audio, P5 Advanced, then Apply and reset).
+// Machine settings (CPU speed, Disk drives, SHRG, Video standard) are latched
+// into cfg at reset; the rest act at once (video, overlays, input, tape: tape
+// standard rules 1-2). v,1: the defaults changed (Disk drives On), so .CFG
+// files from older builds are dropped.
+//
+// status bits: 0 Apply and reset; 4:2 Scandoubler Fx; 5 CPU speed; 6 Disk
+// drives (0 = On); 7 SHRG (0 = On); 9:8 Aspect ratio; 11 Load hints (0 = On);
+// 12 Tape speed; 13 Tape overlay (0 = On); 14 Tape audio; 15 Rewind tape;
+// 16 Tape deck; 17 Tape polarity; 19:18 Tape pitch; 20 Video standard;
+// 22:21 Scale; 23 Keyboard layout. (10 = SWITCH[3] 64x32 text, not offered.)
 localparam CONF_STR = {
         "Laser;;",
         "-;",
-        "F1,VZ ,Load VZ Image;",
+        "H1S1,DSK,Disk 1;",
+        "h1-;",
+        "H1S2,DSK,Disk 2;",
+        "h1-;",
+        "S0,WAVCAS,Tape;",
+        "F1,VZ,Load VZ;",
+        "F0,ROM,Load ROM;",
         "-;",
-        "O89,Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
-	"O24,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
-
-        "O5,Turbo,Off,On;",
-        "O6,Dos Rom,Off,On;",
-        "O7,SHRG,Off,On;",
-     //   "O8,64x32 Video,Off,On;",
-
-		"-;",
-				// [MiSTer-DB9-Pro BEGIN] - Saturn-first joy_type (canonical bit notation)
-		"O[127:126],UserIO Joystick,Off,Saturn,DB9MD,DB15;",
-		"O[125],UserIO Players, 1 Player,2 Players;",
-		// [MiSTer-DB9-Pro END]
+        "P1,Machine;",
+        "P2,Video;",
+        "P3,Input;",
+        "P4,Audio;",
+        "P5,Advanced;",
         "-;",
-        "R0,Reset;",
-	"J,Fire 1,Button 2;",
+        // [MiSTer-DB9-Pro BEGIN] - Saturn-first joy_type (canonical bit notation)
+        "O[127:126],UserIO Joystick,Off,Saturn,DB9MD,DB15;",
+        "O[125],UserIO Players,1 Player,2 Players;",
+        // [MiSTer-DB9-Pro END]
+        "h0-,Changes pending;",
+        "R[0],Apply and reset;",
+
+        "P1O[6],Disk drives (DOS),On,Off;",
+        "P1O[5],CPU speed,Normal,3x;",
+        "P1O[7],SHRG,On,Off;",
+        "P1O[12],Tape speed,3x,Normal;",
+        "P1-;",
+        "P1R[15],Rewind tape;",
+
+        "P2O[20],Video standard,PAL (50 Hz),NTSC (60 Hz);",
+        "P2-;",
+        "P2O[9:8],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
+        "P2O[22:21],Scale,Normal,V-Integer,Narrower HV-Integer,Wider HV-Integer;",
+        "P2O[4:2],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
+        "P2-;",
+        "P2O[13],Tape overlay,On,Off;",
+        "P2O[11],Load hints,On,Off;",
+
+        "P3O[23],Keyboard layout,VZ,PC;",
+
+        "P4O[14],Tape audio,Off,On;",
+
+        "P5O[16],Tape deck,Auto,Play;",
+        "P5O[17],Tape polarity,Normal,Inverted;",
+        "P5O[19:18],Tape pitch,Auto,Normal,+6%,+12%;",
+
+        "I,Tape ready (rewound),Tape format not supported;",
+        "J,Fire,Arm;",
+        "v,1;",
         "V,v",`BUILD_DATE
 };
+
 
 wire LED;
 wire LED2;
 
-// [MiSTer-DB9 BEGIN] - widened to 128 bits for joy_type at [127:126] and joy_2p at [125]
 wire [127:0] status;
-// [MiSTer-DB9 END]
+wire        pending, dos_off;   // OSD menumask: Changes pending, disk rows hidden
 wire  [1:0] buttons;
 wire        ioctl_download;
 wire        ioctl_wr;
@@ -339,7 +388,25 @@ wire [31:0] joystick_1 = joydb_2ena ? (OSD_STATUS? 32'b000000 : joydb_2_mapped[5
 
 
 
-hps_io #(.CONF_STR(CONF_STR), .PS2DIV(32)/*, .WIDE(0)*/) hps_io
+// tape image slot and the OSD info message on mount ("I," in CONF_STR)
+// S0 tape, S1/S2 floppy drives 1 and 2 (rtl/vz_floppy.sv)
+wire  [2:0] img_mounted;
+wire        img_readonly;
+wire [63:0] img_size;
+wire [31:0] sd_lba, disk_sd_lba;
+wire  [2:0] sd_ack;
+wire        sd_rd, sd_buff_wr;
+wire  [1:0] disk_sd_rd, disk_sd_wr;
+wire  [7:0] disk_sd_buff_din;
+wire        disk_activity;
+assign LED_DISK  = {1'b0, LED | disk_activity};   // drive selected or .VZ loading
+wire [13:0] sd_buff_addr;
+wire  [7:0] sd_buff_dout;
+wire        tape_ready, tape_bad;
+reg         info_req;
+reg   [7:0] info;
+
+hps_io #(.CONF_STR(CONF_STR), .PS2DIV(32), .VDNUM(3)) hps_io
 (
         .clk_sys(clk_sys),
         .HPS_BUS(HPS_BUS),
@@ -370,6 +437,25 @@ hps_io #(.CONF_STR(CONF_STR), .PS2DIV(32)/*, .WIDE(0)*/) hps_io
         // [MiSTer-DB9-Pro END]
 		.ps2_key(ps2_key),
 
+        // tape (S0), disks (S1, S2)
+        .img_mounted(img_mounted),
+        .img_readonly(img_readonly),
+        .img_size(img_size),
+        .sd_lba('{sd_lba, disk_sd_lba, disk_sd_lba}),
+        .sd_blk_cnt('{6'd0, 6'd0, 6'd0}),
+        .sd_rd({disk_sd_rd, sd_rd}),
+        .sd_wr({disk_sd_wr, 1'b0}),
+        .sd_ack(sd_ack),
+        .sd_buff_addr(sd_buff_addr),
+        .sd_buff_dout(sd_buff_dout),
+        .sd_buff_din('{8'd0, disk_sd_buff_din, disk_sd_buff_din}),
+        .sd_buff_wr(sd_buff_wr),
+
+        .status_menumask({14'd0, dos_off, pending}),   // bit 0: Changes pending, bit 1: hide the disk rows
+
+        .info_req(info_req),
+        .info(info),
+
         .ps2_kbd_clk_out    ( ps2_kbd_clk    ),
         .ps2_kbd_data_out   ( ps2_kbd_data   )
 );
@@ -378,10 +464,23 @@ wire reset;
 wire rom_download = ioctl_download && !ioctl_index;
 assign reset = (RESET | status[0] | buttons[1] | rom_download  );
 
+// The machine settings it runs with: taken from the OSD at every reset (Apply
+// and reset, the board's reset, a core load, Load ROM).
+reg [127:0] cfg;
+always @(posedge clk_sys) if (reset) cfg <= status;
+assign pending = {status[7:5], status[20]} != {cfg[7:5], cfg[20]};
+assign dos_off = status[6];   // live: the disk rows hide as soon as Disk drives is Off
+
 wire ps2_kbd_clk;
 wire ps2_kbd_data;
 
 assign clk_sys  = clk_42; 
+
+always @(posedge clk_sys) begin
+        info_req <= 0;
+        if (tape_ready) begin info <= 8'd1; info_req <= 1; end
+        if (tape_bad)   begin info <= 8'd2; info_req <= 1; end
+end
 wire       key_pressed = ps2_key[9];
 wire [8:0] key_code    = ps2_key[8:0];
 reg key_strobe;
@@ -412,6 +511,7 @@ LASER310_TOP LASER310_TOP(
         .key_strobe     (key_strobe     ),
         .key_pressed    (key_pressed    ),
         .key_code       (key_code       ),
+        .kbd_pc         (status[23]     ),
 
 	.dn_index(ioctl_index),
 	.dn_data(ioctl_data),
@@ -420,7 +520,8 @@ LASER310_TOP LASER310_TOP(
 	.dn_download(ioctl_download),
 	.led(LED),
 	.led2(LED2),
-        .SWITCH({"0000",status[10],~status[7],status[6],status[5]}),
+        // SWITCH: [0] CPU 3x, [1] DOS ROM + drives, [2] SHRG (each On when its bit is 0 / 1 as listed above)
+        .SWITCH({6'b000000,1'b0,~cfg[7],~cfg[6],cfg[5]}),
         .UART_RXD(),
         .UART_TXD(),
 	// joystick
@@ -435,7 +536,35 @@ LASER310_TOP LASER310_TOP(
         .right_2(joystick_1[0]),
         .left_2(joystick_1[1]),
         .down_2(joystick_1[2]),
-        .up_2(joystick_1[3])
+        .up_2(joystick_1[3]),
+        .cass_in(1'b0),          // sim-only direct drive; the tape player is inside (vz_tape.sv)
+        .hint_en(~status[11]),   // OB Load hints, On by default
+        .tape_overlay_en(~status[13]),
+        .tape_turbo_en(~status[12]),
+        .tape_audio_en(status[14]),
+        .video_pal(~cfg[20]),
+        .tape_deck_play(status[16]),
+        .tape_invert(status[17]),
+        .tape_pitch((status[19:18] == 2'd0 ? 2'd3 : status[19:18] - 2'd1)),   // OSD Auto (default) / Normal / +6% / +12%
+        .tape_rewind(status[15]),
+        .img_mounted(img_mounted[0]),
+        .img_size(img_size),
+        .sd_lba(sd_lba),
+        .sd_rd(sd_rd),
+        .sd_ack(sd_ack[0]),
+        .sd_buff_addr(sd_buff_addr[8:0]),
+        .sd_buff_dout(sd_buff_dout),
+        .sd_buff_wr(sd_buff_wr),
+        .tape_ready(tape_ready),
+        .tape_bad(tape_bad),
+        .disk_img_mounted(img_mounted[2:1]),
+        .img_readonly(img_readonly),
+        .disk_sd_lba(disk_sd_lba),
+        .disk_sd_rd(disk_sd_rd),
+        .disk_sd_wr(disk_sd_wr),
+        .disk_sd_ack(sd_ack[2:1]),
+        .disk_sd_buff_din(disk_sd_buff_din),
+        .disk_activity(disk_activity)
 
         );
 
@@ -468,7 +597,25 @@ video_mixer #(.LINE_LENGTH(800),.GAMMA(1)) video_mixer
         .HSync(hs),
         .VSync(vs),
         .HBlank(hblank),
-        .VBlank(vblank)
+        .VBlank(vblank),
+
+        .VGA_DE(vga_de)
+);
+
+// Original aspect (video-standard.md, Sizes): the core sends 256 x 192
+// active pixels (no border) at 42.954545 / 6 = 7.1591 MHz (2 x fsc).
+// PAR = 6.1364 / 7.1591 = 6/7, so 256 x 6/7 : 192 = 1536:1344 = 8:7 (1.14).
+// The PAL mode keeps the same pixel clock and 192 active lines.
+wire vga_de;
+video_freak video_freak
+(
+        .*,
+        .VGA_DE_IN(vga_de),
+        .ARX((!ar) ? 12'd8 : (ar - 1'd1)),
+        .ARY((!ar) ? 12'd7 : 12'd0),
+        .CROP_SIZE(12'd0),
+        .CROP_OFF(5'd0),
+        .SCALE({1'b0, status[22:21]})
 );
 
 //
@@ -476,9 +623,9 @@ video_mixer #(.LINE_LENGTH(800),.GAMMA(1)) video_mixer
 wire clk_sys,locked;
 wire hs,vs,hblank,vblank;
 
-wire [7:0]audiomix;
+wire [15:0] audiomix;		// signed
 
-assign AUDIO_L={audiomix,8'b0000000};
+assign AUDIO_L=audiomix;
 assign AUDIO_R=AUDIO_L;
 
 
