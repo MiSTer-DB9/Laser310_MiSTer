@@ -235,8 +235,8 @@ wire  [15:0] db9_remap_din;
 // [MiSTer-DB9 END]
 // [MiSTer-DB9 BEGIN] - DB9 remap factory default (used until Main_MiSTer streams UIO 0xFD)
 // Derived from CONF_STR J1, same rule as db9_map.cpp; lets the core work on a stock MiSTer binary.
-// DB15:  Fire 1=A, Button 2=B
-// DB9MD: Fire 1=B, Button 2=C
+// DB15:  Fire=A, Arm=B
+// DB9MD: Fire=B, Arm=C
 wire  [35:0] db9_remap_default_db15  = 36'hFFFFFFF54;
 wire  [35:0] db9_remap_default_db9md = 36'hFFFFFFF65;
 // [MiSTer-DB9 END]
